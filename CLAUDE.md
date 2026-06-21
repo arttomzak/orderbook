@@ -108,12 +108,13 @@ latency → report`.
 ## Build order (current plan)
 
 1. **Repo scaffold** — directory structure, CMakeLists skeleton, GoogleTest
-   wired via FetchContent. No real logic yet. *(We are here.)*
+   wired via FetchContent. No real logic yet. *(Done.)*
 2. **`types.hpp` + `object_pool.hpp`** — core types and the allocator, unit
-   tested standalone.
+   tested standalone. *(Done.)*
 3. **`order_book.hpp`** — `PriceLevel` + `OrderBook` storage/mutation API,
    intrusive lists, id-index. Unit tested with hand-written synthetic orders
    (insert, cancel, best bid/ask correctness) — no crossing logic yet.
+   *(We are here.)*
 4. **`matching_engine.hpp`** — crossing logic, price-time priority, `Fill`
    emission, built entirely on `OrderBook`'s public API. Unit tested against
    hand-crafted order sequences with known expected fills.
@@ -137,7 +138,6 @@ latency → report`.
 
 ## Commands
 
-(To be filled in once CMakeLists.txt exists.)
 - Configure: `cmake -B build -DCMAKE_BUILD_TYPE=Release`
 - Build: `cmake --build build`
 - Unit tests: `ctest --test-dir build`
