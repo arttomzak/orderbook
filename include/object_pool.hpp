@@ -19,15 +19,30 @@ class ObjectPool {
   // custom type representing the slot index 
   using Handle = std::uint32_t;
 
-  // sentinel value for all to recognize that this slot is not free! -> (max val of a Handle)
+  // sentinel meaning "no handle" - returned by allocate() when the pool is full, not a marker on any real slot -> (max val of a Handle)
   // note that static makes it so every ObjectPool object uses this instance rather than a bunch of copies 
   // constexpr -> resolved at compile time (this number will never change)
   static constexpr Handle kInvalidHandle =
       std::numeric_limits<Handle>::max();
 
 
-  ObjectPool();
-  ~ObjectPool();
+  // every slot starts free 
+  ObjectPool() : free_count_(Capacity) {
+    for (std::size_t i = 0; i < Capacity; ++i) {
+      free_indices_[i] = static_cast<Handle>(Capacity - 1 - i);
+    }
+  }
+
+  // Anything still live when the pool itself is destroyed (e.g. orders
+  // still resting at the end of a benchmark run) needs its destructor run
+  // explicitly - storage_ is just bytes, nothing does this automatically.
+  ~ObjectPool() {
+    for (Handle h = 0; h < Capacity; ++h) {
+      if (live_.test(h)) {
+        slot_ptr(h)->~T();
+      }
+    }
+  }
 
   ObjectPool(const ObjectPool&) = delete;
   ObjectPool& operator=(const ObjectPool&) = delete;
@@ -52,7 +67,37 @@ class ObjectPool {
   bool empty() const;
 
  private:
-  // TODO: helpers for turning a Handle into a pointer into storage_.
+  // Raw address of slot h, for placement-new'ing a T into a slot that has
+  // no live object yet - no claims about what's there.
+  void* slot_address(Handle h) { return storage_[h].data(); }
 
-  // TODO: storage_, free_indices_, free_count_, live_ member declarations.
+  // Pointer to the already-constructed T living in slot h. std::launder
+  // re-derives the real object pointer, since the compiler doesn't
+  // otherwise know a T now lives inside what it still sees as raw bytes.
+  T* slot_ptr(Handle h) {
+    return std::launder(reinterpret_cast<T*>(storage_[h].data()));
+  }
+  const T* slot_ptr(Handle h) const {
+    return std::launder(reinterpret_cast<const T*>(storage_[h].data()));
+  }
+
+  // Raw, uninitialized storage for Capacity slots, each big enough and
+  // correctly aligned to hold one T (alignas enables this)
+  alignas(T) std::array<std::array<std::byte, sizeof(T)>, Capacity> storage_;
+
+  // LIFO stack of slot indices that are currently free.
+  // Only the first free_count_ entries are meaningful at any given time -
+  // the rest is leftover/stale data from past pops, ignored.
+  std::array<Handle, Capacity> free_indices_;
+
+  // How many entries at the front of free_indices_ are currently valid -
+  // i.e. how many slots are free right now. Also doubles as the stack's
+  // "top" pointer: the next free slot to hand out is free_indices_[free_count_ - 1].
+  std::size_t free_count_;
+
+  // One bit per slot: true if that slot currently holds a real, constructed
+  // T. Used to catch double-free (asserting a slot was actually live before
+  // destroying it again) and so the destructor knows exactly which slots
+  // still need their T destroyed when the pool itself goes away.
+  std::bitset<Capacity> live_;
 };
