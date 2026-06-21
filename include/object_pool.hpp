@@ -49,22 +49,54 @@ class ObjectPool {
   ObjectPool(ObjectPool&&) = delete;
   ObjectPool& operator=(ObjectPool&&) = delete;
 
-  // TODO: placement-new construct T at a free slot, push/pop free list.
-  // Returns kInvalidHandle if full.
+  // Returns kInvalidHandle if full - an expected, caller-checked outcome,
+  // not an assert/throw.
   template <typename... Args>
-  Handle allocate(Args&&... args);
+  Handle allocate(Args&&... args) {
+    if (free_count_ == 0) {
+      return kInvalidHandle;
+    }
 
-  // TODO: destroy T at h, return its slot to the free list.
-  void deallocate(Handle h);
+    const Handle h = free_indices_[--free_count_]; // in one line "pops" from our stack of free indices 
+    
+    // :: is the global new, making sure we know what it's doing 
+    // slot_address uses our helper to find exactly where the slot is from our handle index 
+    // then calls a constructor for T using the args we passed through (from our market data)
+    ::new (slot_address(h)) T(std::forward<Args>(args)...);
+    live_.set(h); // mark slot as allocated 
+    return h;
+  }
 
-  // TODO: return a reference to the live T at handle h.
-  T& get(Handle h);
-  const T& get(Handle h) const;
+  // Bad handle (never allocated / already freed) is a programmer error,
+  // not a runtime condition - defended with debug-only asserts.
+  void deallocate(Handle h) {
+    // make sure that we are under the cap and by the bitset have an object to dealloc 
+    assert(h < Capacity);  
+    assert(live_.test(h));
 
-  std::size_t size() const;
+    slot_ptr(h)->~T(); // call the destructor of the object at the handle's pointer 
+    live_.reset(h); // bitset method, clears the bit back to 0 or available mode  
+    free_indices_[free_count_++] = h; // "push"" to the stack of free indices
+  }
+
+  // Same narrow-contract pattern as deallocate(): bad handle is a
+  // programmer error, debug-only asserts, zero cost in Release.
+  T& get(Handle h) {
+    assert(h < Capacity);
+    assert(live_.test(h));
+    return *slot_ptr(h);
+  }
+  const T& get(Handle h) const {
+    assert(h < Capacity);
+    assert(live_.test(h));
+    return *slot_ptr(h);
+  }
+
+  // Live count is just total minus however many are sitting free.
+  std::size_t size() const { return Capacity - free_count_; }
   static constexpr std::size_t capacity() { return Capacity; }
-  bool full() const;
-  bool empty() const;
+  bool full() const { return free_count_ == 0; }
+  bool empty() const { return free_count_ == Capacity; }
 
  private:
   // Raw address of slot h, for placement-new'ing a T into a slot that has
