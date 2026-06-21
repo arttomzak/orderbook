@@ -57,13 +57,88 @@ struct PriceLevel {
 // would mean a heap allocation on every single order event.
 template <std::size_t IndexCapacity>
 class IdIndex {
+  static_assert((IndexCapacity & (IndexCapacity - 1)) == 0,
+                "IndexCapacity must be a power of two");
+
  public:
-  // TODO: insert(OrderId, Handle) -> bool
-  // TODO: find(OrderId) const -> Handle (kInvalidHandle on miss)
-  // TODO: erase(OrderId) -> bool
+  bool insert(OrderId id, std::uint32_t handle) {
+    std::size_t idx = slotFor(id);
+    for (std::size_t probes = 0; probes < IndexCapacity; ++probes) {
+      Slot& slot = slots_[idx];
+      if (slot.state != SlotState::Occupied) {
+        slot.key = id;
+        slot.value = handle;
+        slot.state = SlotState::Occupied;
+        ++count_;
+        return true;
+      }
+      if (slot.key == id) {
+        return false;  // already present
+      }
+      idx = (idx + 1) & (IndexCapacity - 1); // bitwise trick to get next valid index (modulo is expensive)
+    }
+    return false;  // full - shouldn't happen given IndexCapacity's sizing
+  }
+
+  std::uint32_t find(OrderId id) const {
+    std::size_t idx = slotFor(id);
+    for (std::size_t probes = 0; probes < IndexCapacity; ++probes) {
+      const Slot& slot = slots_[idx];
+      if (slot.state == SlotState::Empty) {
+        return kInvalidHandle;
+      }
+      if (slot.state == SlotState::Occupied && slot.key == id) {
+        return slot.value;
+      }
+      idx = (idx + 1) & (IndexCapacity - 1);
+    }
+    return kInvalidHandle;
+  }
+
+  bool erase(OrderId id) {
+    std::size_t idx = slotFor(id);
+    for (std::size_t probes = 0; probes < IndexCapacity; ++probes) {
+      Slot& slot = slots_[idx];
+      if (slot.state == SlotState::Empty) {
+        return false;
+      }
+      if (slot.state == SlotState::Occupied && slot.key == id) {
+        slot.state = SlotState::Tombstone;
+        --count_;
+        return true;
+      }
+      idx = (idx + 1) & (IndexCapacity - 1);
+    }
+    return false;
+  }
 
  private:
-  // TODO: slots_ (array of {OrderId key, Handle value, state}), count_
+  // Empty: never used, probing stops here. Occupied: live entry.
+  // Tombstone: erased - probing must continue past these.
+  enum class SlotState : std::uint8_t { Empty, Occupied, Tombstone };
+
+  struct Slot {
+    OrderId key;
+    std::uint32_t value;
+    SlotState state = SlotState::Empty;
+  };
+
+  // splitmix64-style finalizer - ITCH order ids aren't adversarial, just
+  // need a fast, well-distributed mix.
+  static std::size_t slotFor(OrderId id) {
+    std::uint64_t x = id;
+
+    // our hashing function that is a lil bit faster than something security focused
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return static_cast<std::size_t>(x) & (IndexCapacity - 1);
+  }
+
+  std::array<Slot, IndexCapacity> slots_;
+  std::size_t count_ = 0;
 };
 
 // Sole owner of mutation for the book: the only thing that touches the
