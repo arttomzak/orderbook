@@ -3,6 +3,7 @@
 #include "object_pool.hpp"
 #include "types.hpp"
 
+#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -141,6 +142,17 @@ class IdIndex {
   std::size_t count_ = 0;
 };
 
+// Smallest power of two >= n. Used to size IdIndex, which needs a
+// power-of-two capacity for its bitmask probing - independent of
+// OrderBook's own Capacity, which has no such constraint.
+constexpr std::size_t nextPow2(std::size_t n) {
+  std::size_t p = 1;
+  while (p < n) {
+    p <<= 1;
+  }
+  return p;
+}
+
 // Sole owner of mutation for the book: the only thing that touches the
 // id-index, the object pool, and the intrusive list pointers. Storage and
 // mutation only - no crossing/matching logic (that's MatchingEngine).
@@ -151,20 +163,98 @@ class OrderBook {
   static constexpr Handle kInvalidHandle =
       ObjectPool<Order, Capacity>::kInvalidHandle;
 
-  OrderBook(Price basePrice, std::size_t numTicks);
+  // bidLevels_/askLevels_ are sized to numTicks_ up front and never resized
+  // again - every PriceLevel in range default-constructs to empty
+  // (head/tail = kInvalidHandle), so there's no separate init pass needed.
+  OrderBook(Price basePrice, std::size_t numTicks)
+      : basePrice_(basePrice),
+        numTicks_(numTicks),
+        bidLevels_(numTicks),
+        askLevels_(numTicks) {}
 
-  // TODO: restOrder(Order) -> Handle
+  // Bounds-checks order.price, allocates a pool slot, links it into the
+  // tail of its PriceLevel's intrusive list (time priority - later orders
+  // append after earlier ones), indexes it by id, and updates the
+  // best-price cache if needed. Returns kInvalidHandle if the price falls
+  // outside [basePrice_, basePrice_ + numTicks_) or the pool is full - both
+  // expected, caller-checked outcomes, same pattern as ObjectPool::allocate.
+  Handle restOrder(Order order) {
+    const std::int64_t index = priceToIndex(order.price);
+    if (index < 0 || static_cast<std::size_t>(index) >= numTicks_) {
+      return kInvalidHandle;
+    }
+
+    // prev/next/levelIndex are OrderBook-owned bookkeeping, not caller
+    // concerns - whatever the caller put there is overwritten here.
+    order.prev = kInvalidHandle;
+    order.next = kInvalidHandle;
+    order.levelIndex = static_cast<std::int32_t>(index);
+
+    const Handle h = pool_.allocate(order);
+    if (h == kInvalidHandle) {
+      return kInvalidHandle;
+    }
+
+    PriceLevel& level = (order.side == Side::Buy ? bidLevels_ : askLevels_)
+                            [static_cast<std::size_t>(index)];
+
+    if (level.tail == kInvalidHandle) {
+      level.head = h;
+    } else {
+      pool_.get(level.tail).next = h;
+      pool_.get(h).prev = level.tail;
+    }
+    level.tail = h;
+    level.totalVolume += order.quantity;
+    ++level.orderCount;
+
+    [[maybe_unused]] const bool inserted = idIndex_.insert(order.id, h);
+    assert(inserted);  // duplicate order id would mean bad upstream data
+
+    if (order.side == Side::Buy) {
+      if (bestBidIndex_ == -1 || index > bestBidIndex_) {
+        bestBidIndex_ = index;
+      }
+    } else {
+      if (bestAskIndex_ == -1 || index < bestAskIndex_) {
+        bestAskIndex_ = index;
+      }
+    }
+
+    return h;
+  }
+
   // TODO: bestBid() -> PriceLevel*
   // TODO: bestAsk() -> PriceLevel*
   // TODO: reduceQty(OrderId, Quantity) -> bool
   // TODO: removeOrder(OrderId) -> bool
 
  private:
-  // TODO: priceToIndex(Price) const -> std::int64_t
+  // Converts an absolute tick price into a zero-based index into
+  // bidLevels_/askLevels_. No bounds checking here - callers (restOrder
+  // etc.) are responsible for validating the result against numTicks_.
+  std::int64_t priceToIndex(Price price) const {
+    return price - basePrice_;
+  }
+
   // TODO: removeByHandle(Handle) - shared by removeOrder and reduceQty's
   // zero-or-below path.
 
   ObjectPool<Order, Capacity> pool_;
-  // TODO: idIndex_, basePrice_, numTicks_, bidLevels_, askLevels_,
-  // bestBidIndex_, bestAskIndex_.
+
+  // 2x Capacity keeps IdIndex's load factor at <= 50%, so linear-probing
+  // chains stay short even when the pool is nearly full.
+  IdIndex<nextPow2(Capacity * 2)> idIndex_;
+
+  Price basePrice_;
+  std::size_t numTicks_;
+
+  std::vector<PriceLevel> bidLevels_;
+  std::vector<PriceLevel> askLevels_;
+
+  // Index into bidLevels_/askLevels_ of the best (highest bid / lowest ask)
+  // currently-occupied price level. -1 means "no resting orders on this
+  // side" - checked explicitly by bestBid()/bestAsk() before dereferencing.
+  std::int64_t bestBidIndex_ = -1;
+  std::int64_t bestAskIndex_ = -1;
 };
