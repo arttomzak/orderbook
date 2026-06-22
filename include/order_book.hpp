@@ -224,10 +224,60 @@ class OrderBook {
     return h;
   }
 
-  // TODO: bestBid() -> PriceLevel*
-  // TODO: bestAsk() -> PriceLevel*
-  // TODO: reduceQty(OrderId, Quantity) -> bool
-  // TODO: removeOrder(OrderId) -> bool
+  // Raw pointer into bidLevels_/askLevels_, not a copy - MatchingEngine
+  // reads price/totalVolume/head straight off this without OrderBook having
+  // to hand back a snapshot. nullptr means that side is empty, mirroring
+  // the -1 sentinel on bestBidIndex_/bestAskIndex_.
+  PriceLevel* bestBid() {
+    return bestBidIndex_ == -1
+               ? nullptr
+               : &bidLevels_[static_cast<std::size_t>(bestBidIndex_)];
+  }
+
+  PriceLevel* bestAsk() {
+    return bestAskIndex_ == -1
+               ? nullptr
+               : &askLevels_[static_cast<std::size_t>(bestAskIndex_)];
+  }
+  // delta is shares to subtract from the resting quantity (matches ITCH
+  // Order Executed/Cancel messages, which give a share count, not a new
+  // absolute quantity). delta == current quantity fully consumes the order
+  // and removes it. Returns false if id isn't resting - not found is an
+  // expected, caller-checked outcome (e.g. a duplicate/late ITCH message),
+  // not a programmer error.
+  bool reduceQty(OrderId id, Quantity delta) {
+    const Handle h = idIndex_.find(id);
+    if (h == kInvalidHandle) {
+      return false;
+    }
+
+    Order& o = pool_.get(h);
+    // delta > quantity would mean a fill/cancel for more than is actually
+    // resting - that's a bug upstream (matching engine miscomputed a fill
+    // size, or our book has drifted from ITCH ground truth), not a valid
+    // input to silently clamp.
+    assert(delta <= o.quantity);
+    if (delta == o.quantity) {
+      removeByHandle(h);
+      return true;
+    }
+
+    o.quantity -= delta;
+    PriceLevel& level = (o.side == Side::Buy ? bidLevels_ : askLevels_)
+                            [static_cast<std::size_t>(o.levelIndex)];
+    level.totalVolume -= delta;
+    return true;
+  }
+
+  // Same not-found contract as reduceQty: false if id isn't resting.
+  bool removeOrder(OrderId id) {
+    const Handle h = idIndex_.find(id);
+    if (h == kInvalidHandle) {
+      return false;
+    }
+    removeByHandle(h);
+    return true;
+  }
 
  private:
   // Converts an absolute tick price into a zero-based index into
@@ -237,8 +287,59 @@ class OrderBook {
     return price - basePrice_;
   }
 
-  // TODO: removeByHandle(Handle) - shared by removeOrder and reduceQty's
-  // zero-or-below path.
+  // Unlinks h from its PriceLevel's intrusive list, updates level
+  // bookkeeping, advances the best-price cache if the level that just
+  // emptied was the best on its side, then erases the id and frees the
+  // pool slot. Shared by removeOrder and reduceQty's fully-consumed path.
+  void removeByHandle(Handle h) {
+    Order& o = pool_.get(h);
+    const OrderId id = o.id;
+    const Side side = o.side;
+    const auto levelIndex = static_cast<std::size_t>(o.levelIndex);
+
+    std::vector<PriceLevel>& levels = (side == Side::Buy) ? bidLevels_ : askLevels_;
+    PriceLevel& level = levels[levelIndex];
+
+    if (o.prev != kInvalidHandle) {
+      pool_.get(o.prev).next = o.next;
+    } else {
+      level.head = o.next;
+    }
+    if (o.next != kInvalidHandle) {
+      pool_.get(o.next).prev = o.prev;
+    } else {
+      level.tail = o.prev;
+    }
+
+    level.totalVolume -= o.quantity;
+    --level.orderCount;
+
+    // If the level that just emptied was the cached best price on its
+    // side, scan toward worse prices for the next occupied level - linear
+    // for now, only triggers when the best level itself empties.
+    if (level.head == kInvalidHandle) {
+      if (side == Side::Buy && bestBidIndex_ == static_cast<std::int64_t>(levelIndex)) {
+        std::int64_t idx = bestBidIndex_ - 1;
+        while (idx >= 0 &&
+               bidLevels_[static_cast<std::size_t>(idx)].head == kInvalidHandle) {
+          --idx;
+        }
+        bestBidIndex_ = idx;  // -1 if none found, matching the empty-side sentinel
+      } else if (side == Side::Sell &&
+                 bestAskIndex_ == static_cast<std::int64_t>(levelIndex)) {
+        const auto numTicksIdx = static_cast<std::int64_t>(numTicks_);
+        std::int64_t idx = bestAskIndex_ + 1;
+        while (idx < numTicksIdx &&
+               askLevels_[static_cast<std::size_t>(idx)].head == kInvalidHandle) {
+          ++idx;
+        }
+        bestAskIndex_ = (idx < numTicksIdx) ? idx : -1;
+      }
+    }
+
+    idIndex_.erase(id);
+    pool_.deallocate(h);
+  }
 
   ObjectPool<Order, Capacity> pool_;
 
