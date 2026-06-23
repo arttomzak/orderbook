@@ -279,6 +279,12 @@ class OrderBook {
     return true;
   }
 
+  // Read-only access to a resting order by handle - lets callers (e.g.
+  // MatchingEngine, walking a PriceLevel's intrusive list during crossing)
+  // see an order's id/price/quantity/next without OrderBook handing out
+  // mutation access. OrderBook stays the sole mutator; this is read-only.
+  const Order& peek(Handle h) const { return pool_.get(h); }
+
  private:
   // Converts an absolute tick price into a zero-based index into
   // bidLevels_/askLevels_. No bounds checking here - callers (restOrder
