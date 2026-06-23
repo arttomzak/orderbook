@@ -9,6 +9,10 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 include(FetchContent)
+# Once GoogleTest has been fetched once (cached under build/_deps), never
+# reach out to check for updates on later reconfigures - keeps offline
+# builds working as long as build/ isn't deleted.
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 FetchContent_Declare(
   googletest
   GIT_REPOSITORY https://github.com/google/googletest.git
