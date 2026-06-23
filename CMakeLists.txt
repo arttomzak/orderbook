@@ -31,6 +31,7 @@ add_executable(unit_tests
   tests/scaffold_test.cpp
   tests/test_types.cpp
   tests/test_object_pool.cpp
+  tests/test_order_book.cpp
 )
 target_link_libraries(unit_tests PRIVATE orderbook_core GTest::gtest_main)
 
