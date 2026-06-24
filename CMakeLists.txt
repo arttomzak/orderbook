@@ -26,8 +26,13 @@ add_library(orderbook_core INTERFACE)
 target_include_directories(orderbook_core INTERFACE ${CMAKE_SOURCE_DIR}/include)
 target_compile_features(orderbook_core INTERFACE cxx_std_20)
 
-add_executable(orderbook src/main.cpp)
-target_link_libraries(orderbook PRIVATE orderbook_core)
+# itchcpp (Layer 1 dependency): vendored as a git submodule, pinned by commit.
+# Its own CMake builds the itch::itch library target; its tests/examples/
+# benchmarks stay off (ITCH_BUILD_* options unset), so we only compile the lib.
+add_subdirectory(third_party/itchcpp)
+
+add_executable(orderbook src/main.cpp src/itch_adapter.cpp)
+target_link_libraries(orderbook PRIVATE orderbook_core itch::itch)
 
 enable_testing()
 

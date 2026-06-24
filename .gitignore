@@ -2,4 +2,5 @@ build/
 *.o
 *.a
 *.so
-OFFLINE_BUILD_NOTES.md 
+OFFLINE_BUILD_NOTES.md
+MARKET_CONCEPTS.md
