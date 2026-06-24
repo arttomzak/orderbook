@@ -4,6 +4,7 @@
 // this translation unit (see itch_adapter.hpp header comment).
 #include "itch/parser.hpp"
 
+#include <cassert>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -64,8 +65,10 @@ void ItchAdapter::onAdd(OrderId id, Side side, Price price, Quantity qty) {
   fills_.clear();
   engine_.submit(Order{.id = id, .price = price, .quantity = qty, .side = side},
                  fills_);
-  // TODO: assert(fills_.empty()) under a correctness build - a clean A should
-  // never cross the existing book (see header comment #1).
+  // Tier-1 invariant: a clean A never crosses the existing book, so submit must
+  // emit no fills (see header comment #1). Debug-only - synthetic matching tests
+  // legitimately cross, so this lives here in the replay path, not in submit().
+  assert(fills_.empty());
   sideByOrder_.emplace(id, side);
   ++stats_.adds;
 }

@@ -4,6 +4,7 @@
 #include "types.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <vector>
 
 // Orchestrates crossing: takes an incoming order, matches it against the
@@ -48,6 +49,13 @@ class MatchingEngine {
     if (order.quantity > 0) {
       book_.restOrder(order);
     }
+
+    // Tier-1 invariant: a completed submit must never leave the book crossed.
+    // Folded into the assert expression so the whole check is elided under
+    // NDEBUG (zero Release cost). Compares inside prices only when both sides
+    // are populated.
+    assert(!(book_.bestBid() && book_.bestAsk() &&
+             book_.bestBidPrice() >= book_.bestAskPrice()));
   }
 
   bool cancel(OrderId id) {
@@ -60,6 +68,13 @@ class MatchingEngine {
 
   PriceLevel* bestBid() { return book_.bestBid(); }
   PriceLevel* bestAsk() { return book_.bestAsk(); }
+
+  // Inside price on each side. Undefined if empty - gate on bestBid()/bestAsk().
+  Price bestBidPrice() { return book_.bestBidPrice(); }
+  Price bestAskPrice() { return book_.bestAskPrice(); }
+
+  // Tier-1 structural audit of the whole book - see OrderBook::auditInvariants.
+  bool audit() const { return book_.auditInvariants(); }
 
  private:
   // Buy crosses if willing to pay at least the resting ask; sell crosses if

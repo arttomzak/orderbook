@@ -239,6 +239,14 @@ class OrderBook {
                ? nullptr
                : &askLevels_[static_cast<std::size_t>(bestAskIndex_)];
   }
+
+  // Absolute tick price of the best level on each side - just the array index
+  // mapped back through basePrice_. Undefined if that side is empty, so callers
+  // must gate on bestBid()/bestAsk() != nullptr first (mirrors the -1 sentinel).
+  // Exists so the correctness harness can diff our inside *price*, not just
+  // volume, against an independent book.
+  Price bestBidPrice() const { return basePrice_ + bestBidIndex_; }
+  Price bestAskPrice() const { return basePrice_ + bestAskIndex_; }
   // delta is shares to subtract from the resting quantity (matches ITCH
   // Order Executed/Cancel messages, which give a share count, not a new
   // absolute quantity). delta == current quantity fully consumes the order
@@ -284,6 +292,69 @@ class OrderBook {
   // see an order's id/price/quantity/next without OrderBook handing out
   // mutation access. OrderBook stays the sole mutator; this is read-only.
   const Order& peek(Handle h) const { return pool_.get(h); }
+
+  // Full structural audit of the book - the Tier-1 correctness check. Walks
+  // every level on both sides and verifies the data structure agrees with
+  // itself: cached level volume/count match the actual orders, the intrusive
+  // list is well-formed (prev/next, head/tail), every order resolves through
+  // the id-index, each order's cached levelIndex/side are right, the live pool
+  // count equals the orders actually threaded into levels, the best-bid/ask
+  // cache points at the true extreme level, and the book is not crossed. Pure
+  // read-only and build-independent (returns false rather than asserting) so a
+  // harness can run it and report PASS/FAIL. O(numTicks + liveOrders).
+  bool auditInvariants() const {
+    std::size_t totalOrders = 0;
+    std::int64_t trueBestBid = -1;
+    std::int64_t trueBestAsk = -1;
+
+    for (int s = 0; s < 2; ++s) {
+      const Side side = (s == 0) ? Side::Buy : Side::Sell;
+      const std::vector<PriceLevel>& levels =
+          (side == Side::Buy) ? bidLevels_ : askLevels_;
+
+      for (std::size_t idx = 0; idx < numTicks_; ++idx) {
+        const PriceLevel& level = levels[idx];
+
+        Quantity volSum = 0;
+        std::uint32_t count = 0;
+        Handle h = level.head;
+        Handle prev = kInvalidHandle;
+        while (h != kInvalidHandle) {
+          const Order& o = pool_.get(h);
+          if (o.side != side) return false;
+          if (o.levelIndex != static_cast<std::int32_t>(idx)) return false;
+          if (o.prev != prev) return false;
+          if (idIndex_.find(o.id) != h) return false;
+          volSum += o.quantity;
+          ++count;
+          prev = h;
+          h = o.next;
+        }
+        if (prev != level.tail) return false;
+        if (count != level.orderCount) return false;
+        if (volSum != level.totalVolume) return false;
+
+        if (count > 0) {
+          totalOrders += count;
+          if (side == Side::Buy) {
+            trueBestBid = static_cast<std::int64_t>(idx);  // ascending -> last wins
+          } else if (trueBestAsk == -1) {
+            trueBestAsk = static_cast<std::int64_t>(idx);  // ascending -> first wins
+          }
+        }
+      }
+    }
+
+    if (trueBestBid != bestBidIndex_) return false;
+    if (trueBestAsk != bestAskIndex_) return false;
+    if (totalOrders != pool_.size()) return false;
+    // Uncrossed: a real single-venue book always has best bid strictly below
+    // best ask (see correctness notes). Only meaningful when both sides exist.
+    if (trueBestBid != -1 && trueBestAsk != -1 && trueBestBid >= trueBestAsk) {
+      return false;
+    }
+    return true;
+  }
 
  private:
   // Converts an absolute tick price into a zero-based index into

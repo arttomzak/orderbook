@@ -62,5 +62,8 @@ int main(int argc, char** argv) {
             << "  replaces: " << s.replaces << "\n"
             << "  best bid: " << levelSummary(engine->bestBid()) << "\n"
             << "  best ask: " << levelSummary(engine->bestAsk()) << "\n";
-  return 0;
+
+  const bool ok = engine->audit();
+  std::cout << "  invariants: " << (ok ? "PASS" : "FAIL") << "\n";
+  return ok ? 0 : 1;
 }
