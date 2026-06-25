@@ -34,6 +34,14 @@ add_subdirectory(third_party/itchcpp)
 add_executable(orderbook src/main.cpp src/itch_adapter.cpp)
 target_link_libraries(orderbook PRIVATE orderbook_core itch::itch)
 
+# Benchmark harness. Builds to build/bench/harness to match the documented
+# command. Includes src/ for itch_adapter.hpp / replay_support.hpp.
+add_executable(harness bench/harness.cpp)
+target_include_directories(harness PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(harness PRIVATE orderbook_core itch::itch)
+set_target_properties(harness PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bench)
+
 enable_testing()
 
 add_executable(unit_tests
