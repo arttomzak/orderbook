@@ -76,6 +76,17 @@ class MatchingEngine {
   // Tier-1 structural audit of the whole book - see OrderBook::auditInvariants.
   bool audit() const { return book_.auditInvariants(); }
 
+  // Capacity diagnostics / drop gate - see OrderBook for the contract.
+  std::size_t peakLiveOrders() const { return book_.peakLiveOrders(); }
+  std::uint64_t droppedOrders() const {
+    return book_.droppedPoolFull() + book_.droppedPriceRange();
+  }
+  std::uint64_t droppedPoolFull() const { return book_.droppedPoolFull(); }
+  std::uint64_t droppedPriceRange() const { return book_.droppedPriceRange(); }
+
+  // Is this price inside the book's flat-array window? Adapter filters on this.
+  bool inPriceRange(Price price) const { return book_.inPriceRange(price); }
+
  private:
   // Buy crosses if willing to pay at least the resting ask; sell crosses if
   // willing to accept at most the resting bid.

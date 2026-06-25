@@ -181,6 +181,7 @@ class OrderBook {
   Handle restOrder(Order order) {
     const std::int64_t index = priceToIndex(order.price);
     if (index < 0 || static_cast<std::size_t>(index) >= numTicks_) {
+      ++droppedPriceRange_;  // price array too narrow for this order
       return kInvalidHandle;
     }
 
@@ -192,7 +193,11 @@ class OrderBook {
 
     const Handle h = pool_.allocate(order);
     if (h == kInvalidHandle) {
+      ++droppedPoolFull_;  // pool capacity exceeded - peak live > Capacity
       return kInvalidHandle;
+    }
+    if (pool_.size() > peakLiveOrders_) {
+      peakLiveOrders_ = pool_.size();
     }
 
     PriceLevel& level = (order.side == Side::Buy ? bidLevels_ : askLevels_)
@@ -356,6 +361,29 @@ class OrderBook {
     return true;
   }
 
+  // High-water mark of simultaneously-resting orders. The pool must be sized
+  // above this for the day, or restOrder starts dropping - so this is the
+  // number that tells us how to size kPoolCapacity. A sizing diagnostic, not a
+  // correctness metric.
+  std::size_t peakLiveOrders() const { return peakLiveOrders_; }
+
+  // Count of orders restOrder could not store. ANY non-zero value voids a
+  // correctness run: from the first drop the book is missing an order the real
+  // book had, so every later check audits a corrupted book. Split by cause so
+  // the fix is obvious - raise the pool capacity vs. widen the price range.
+  std::uint64_t droppedPoolFull() const { return droppedPoolFull_; }
+  std::uint64_t droppedPriceRange() const { return droppedPriceRange_; }
+
+  // True if price falls within the flat array's window
+  // [basePrice, basePrice + numTicks). The adapter uses this to filter
+  // out-of-band orders BEFORE submitting, so they're a deliberate, counted
+  // exclusion rather than a mid-engine drop - keeping the book a faithful
+  // reconstruction of the in-band market.
+  bool inPriceRange(Price price) const {
+    const std::int64_t idx = priceToIndex(price);
+    return idx >= 0 && static_cast<std::size_t>(idx) < numTicks_;
+  }
+
  private:
   // Converts an absolute tick price into a zero-based index into
   // bidLevels_/askLevels_. No bounds checking here - callers (restOrder
@@ -435,4 +463,9 @@ class OrderBook {
   // side" - checked explicitly by bestBid()/bestAsk() before dereferencing.
   std::int64_t bestBidIndex_ = -1;
   std::int64_t bestAskIndex_ = -1;
+
+  // Capacity diagnostics (see accessors above). Updated only in restOrder.
+  std::size_t peakLiveOrders_ = 0;
+  std::uint64_t droppedPoolFull_ = 0;
+  std::uint64_t droppedPriceRange_ = 0;
 };

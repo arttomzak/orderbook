@@ -15,10 +15,10 @@ ItchAdapter::ItchAdapter(Engine& engine, std::string symbol)
   fills_.reserve(64);
 }
 
-void ItchAdapter::run(std::istream& in) {
+void ItchAdapter::run(const char* data, std::size_t size) {
   itch::Parser parser;
 
-  parser.parse(in, [this](const itch::Message& msg) {
+  parser.parse(data, size, [this](const itch::Message& msg) {
     std::visit(
         [this](const auto& m) {
           using T = std::decay_t<decltype(m)>;
@@ -62,6 +62,16 @@ void ItchAdapter::run(std::istream& in) {
 }
 
 void ItchAdapter::onAdd(OrderId id, Side side, Price price, Quantity qty) {
+  // Band filter: an order priced outside the engine's flat-array window is a
+  // stub/parked order far from the market. Exclude it deliberately here -
+  // don't submit, don't track - so its later D/X/E (which reference only its
+  // id) find nothing in sideByOrder_ and are correctly ignored. This keeps the
+  // book a faithful reconstruction of the in-band market with zero drops.
+  if (!engine_.inPriceRange(price)) {
+    ++stats_.excludedOutOfBand;
+    return;
+  }
+
   fills_.clear();
   engine_.submit(Order{.id = id, .price = price, .quantity = qty, .side = side},
                  fills_);
@@ -70,6 +80,8 @@ void ItchAdapter::onAdd(OrderId id, Side side, Price price, Quantity qty) {
   // legitimately cross, so this lives here in the replay path, not in submit().
   assert(fills_.empty());
   sideByOrder_.emplace(id, side);
+  if (stats_.adds == 0 || price < stats_.minPrice) stats_.minPrice = price;
+  if (stats_.adds == 0 || price > stats_.maxPrice) stats_.maxPrice = price;
   ++stats_.adds;
 }
 

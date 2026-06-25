@@ -11,7 +11,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <istream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -34,9 +33,12 @@ class ItchAdapter {
   // borrows it. symbol is the target ticker, e.g. "AAPL".
   ItchAdapter(Engine& engine, std::string symbol);
 
-  // Reads the entire ITCH stream and replays every message for our symbol into
-  // the engine, in order. Blocking, single pass.
-  void run(std::istream& in);
+  // Replays every message for our symbol, in order, from a contiguous ITCH
+  // buffer (e.g. an mmap'd decompressed file). Blocking, single pass. Takes a
+  // raw pointer+size rather than a stream because itchcpp's buffer parser is
+  // zero-copy, and because the full day is far too large to read into memory -
+  // the caller mmaps the file and the kernel pages it in on demand.
+  void run(const char* data, std::size_t size);
 
   // Per-message-type counts for our symbol, accumulated across run(). Pure
   // observability - lets the harness sanity-check that filtering and dispatch
@@ -47,6 +49,15 @@ class ItchAdapter {
     std::uint64_t cancels = 0;
     std::uint64_t executes = 0;
     std::uint64_t replaces = 0;
+    // Adds whose price fell outside the engine's flat-array band and were
+    // deliberately excluded (not submitted, not tracked). These are stub/parked
+    // orders far from the market; excluding them keeps the band small. See the
+    // band-filter in applyAdd. Expected to be a tiny count.
+    std::uint64_t excludedOutOfBand = 0;
+    // Min/max IN-BAND add price seen for our symbol (raw ticks). Sentinels
+    // until first add.
+    Price minPrice = 0;
+    Price maxPrice = 0;
   };
   const Stats& stats() const { return stats_; }
 
